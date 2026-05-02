@@ -27,8 +27,9 @@ def generate_batch():
     """Create a .bat wrapper that activates venv then runs the Python script."""
     content = (
         f'@echo off\r\n'
+        f'cd /d "{SCRIPT_DIR}"\r\n'
         f'call "{VENV_ACTIVATE}"\r\n'
-        f'"%~dp0.venv\\Scripts\\python.exe" "%SCRIPT_DIR%\\pdf_translate.py" "%~1"\r\n'
+        f'python pdf_translate.py "%~1"\r\n'
         f'deactivate\r\n'
     )
     with open(PDF_BATCH, "w", encoding="utf-8") as f:
@@ -78,7 +79,7 @@ def get_progid(ext):
 
 
 def install():
-    print("Installing 'Translate PDF to Russian' context menu entry…\n")
+    print("Installing 'Translate PDF to Russian' context menu entry...\n")
 
     if not os.path.isfile(PDF_SCRIPT):
         print("Error: pdf_translate.py not found.", file=sys.stderr)
@@ -108,15 +109,15 @@ def install():
         winreg.SetValueEx(cmd_key, "", 0, winreg.REG_SZ, cmd_line)
         cmd_key.Close()
 
-        print(f"  ✓ .pdf context menu installed (ProgID: {pdf_class})")
+        print(f"  [OK] .pdf context menu installed (ProgID: {pdf_class})")
     except Exception as e:
-        print(f"  ✗ Failed to install: {e}", file=sys.stderr)
+        print(f"  [ERROR] Failed to install: {e}", file=sys.stderr)
 
-    print("\nDone. Right-click a .pdf file → 'Translate PDF to Russian'.")
+    print("\nDone. Right-click a .pdf file -> 'Translate PDF to Russian'.")
 
 
 def uninstall():
-    print("Removing context menu entry…\n")
+    print("Removing context menu entry...\n")
 
     try:
         pdf_class = get_progid(".pdf")
@@ -124,21 +125,21 @@ def uninstall():
 
         success, output = run_cmd(["reg", "delete", reg_path, "/f"])
         if success:
-            print(f"  ✓ .pdf context menu removed")
+            print("  [OK] .pdf context menu removed")
         else:
             if "could not find" in (output or "").lower():
-                print("  ✓ .pdf context menu removed (wasn't present)")
+                print("  [OK] .pdf context menu removed (wasn't present)")
             else:
-                print(f"  ⚠ Could not remove: {output.strip()}", file=sys.stderr)
+                print(f"  [WARN] Could not remove: {output.strip()}", file=sys.stderr)
     except Exception as e:
-        print(f"  ✗ Unexpected error: {e}", file=sys.stderr)
+        print(f"  [ERROR] Unexpected error: {e}", file=sys.stderr)
 
     if os.path.isfile(PDF_BATCH):
         try:
             os.remove(PDF_BATCH)
             print(f"  Removed {PDF_BATCH}")
         except OSError as e:
-            print(f"  ⚠ Failed to remove {PDF_BATCH}: {e}", file=sys.stderr)
+            print(f"  [WARN] Failed to remove {PDF_BATCH}: {e}", file=sys.stderr)
 
     print("\nUninstall complete.")
 

@@ -22,7 +22,7 @@ SRC_LANG = "en"
 DST_LANG = "ru"
 MARKER_PREFIX = "§TX"   # unlikely to appear in real text / be translated
 CHUNK_THRESHOLD = 150   # max chars per chunk before we split
-MIN_PIECE_LEN = 10      # skip very short fragments (noise, punctuation)
+MIN_PIECE_LEN = 3       # skip very short fragments (noise, punctuation)
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -133,17 +133,41 @@ def replace_text_in_pdf(
     """
     from collections import defaultdict
 
-    # Load a system font that supports Cyrillic
-    FONT_FILE = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-    try:
-        cyrillic_font = fitz.Font(fontfile=FONT_FILE)
-    except Exception:
-        cyrillic_font = None
+    import platform as _plat
+
+    cyrillic_font = None
+
+    # Platform-specific system font paths (all support Cyrillic)
+    _font_candidates = [
+        ("win",      "C:/Windows/Fonts/arial.ttf"),
+        ("darwin",   "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"),
+        ("linux",    ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                      "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"]),
+    ]
+    for family, candidates in _font_candidates:
+        if _plat.system().lower() == family:
+            paths = candidates if isinstance(candidates, list) else [candidates]
+            for pf in paths:
+                try:
+                    cyrillic_font = fitz.Font(fontfile=pf)
+                    break
+                except Exception:
+                    continue
+        if cyrillic_font is not None:
+            break
 
     DEFAULT_FONTSIZE = 10
     MIN_FONTSIZE = 2
     LINE_SPACING = 1.05   # tight vertical spacing to fit more lines
 
+    # ── Compute descender depth for proper vertical alignment ─────────────
+    # font.ascender / font.descender are em-fractions (e.g. Arial: +0.905/−0.212).
+    # At fontsize F the rendered glyph occupies roughly (asc - desc) * F pixels.
+    # Since the PDF bbox was computed with potentially different font metrics,
+    # we add a small correction so the baseline lands closer to where the PDF
+    # originally placed it.  Empirical: shift y₀ by descender fraction × fontsize.
+
+    _desc_frac = float(cyrillic_font.descender) if cyrillic_font else -0.212
     def text_width(text, fontsize):
         """Measure rendered pixel width of text at given fontsize."""
         if cyrillic_font is not None:
@@ -234,8 +258,12 @@ def replace_text_in_pdf(
                 translated, max_width, max_height, base_size
             )
             for i, line in enumerate(lines):
+                # Shift baseline downward slightly — original PDF bboxes account
+                # for the embedded font's descender zone; without the correction
+                # Russian text (rendered with Arial) sits ~1–2 px too high.
+                y_base = y0 + i * fs * LINE_SPACING - _desc_frac * fs
                 tw.append(
-                    (x0, y0 + i * fs * LINE_SPACING),
+                    (x0, y_base),
                     line,
                     font=cyrillic_font,
                     fontsize=fs,
@@ -259,16 +287,36 @@ def translate_pdf(input_path: str, output_path: str):
         print("No text found — nothing to translate.")
         return
 
-    BATCH_SIZE = 20  # pieces per batch — stays within Google's limits
+    # Google Translate free API accepts up to ~5000 chars per request.
+    # Russian text is ~1.4x longer than English, so target 3500 to leave headroom.
+    MAX_BATCH_CHARS = 3500
+    MARKER_OVERHEAD = 10  # each "§TX0000§" placeholder is 10 bytes
 
     translator = Translator()
     mapping: dict[str, str] = {}
 
-    total_batches = (len(blocks) + BATCH_SIZE - 1) // BATCH_SIZE
-    for i in range(0, len(blocks), BATCH_SIZE):
-        chunk = blocks[i:i+BATCH_SIZE]
-        batch_num = i // BATCH_SIZE + 1
-        print(f"  Batch {batch_num}/{total_batches} ({len(chunk)} pieces) …")
+    total_blocks = len(blocks)
+    blocks_processed = 0
+    batch_num = 0
+    i = 0
+    start_time = time.time()
+    while i < len(blocks):
+        batch_num += 1
+        chunk = [blocks[i]]
+        total_chars = MARKER_OVERHEAD + len(blocks[i]["original"])
+        i += 1
+
+        while i < len(blocks):
+            next_piece = blocks[i]
+            projected = total_chars + MARKER_OVERHEAD + len(next_piece["original"])
+            if projected <= MAX_BATCH_CHARS:
+                chunk.append(next_piece)
+                total_chars = projected
+                i += 1
+            else:
+                break
+
+        print(f"  Batch {batch_num} ({len(chunk)} pieces, ~{total_chars} chars) …")
 
         batch_str = build_batch_string(chunk)
         translated_text = translate_batch(translator, batch_str)
@@ -276,8 +324,27 @@ def translate_pdf(input_path: str, output_path: str):
         chunk_mapping = parse_translated(translated_text, chunk)
         mapping.update(chunk_mapping)
 
+        blocks_processed += len(chunk)
+        elapsed = time.time() - start_time
+        remaining_blocks = total_blocks - blocks_processed
+
+        if blocks_processed > 0:
+            estimated_remaining = elapsed / blocks_processed * remaining_blocks
+        else:
+            estimated_remaining = 0
+
+        pct = (blocks_processed / total_blocks) * 100
+        eta_h, eta_r = divmod(int(estimated_remaining), 3600)
+        eta_m, eta_s = divmod(eta_r, 60)
+        elapsed_h, elapsed_r = divmod(int(elapsed), 3600)
+        elapsed_m, elapsed_s = divmod(elapsed_r, 60)
+
+        eta_str = f"{eta_h:01d}:{eta_m:02d}:{eta_s:02d}" if eta_h > 0 else f"{eta_m:02d}:{eta_s:02d}"
+        elapsed_str = f"{elapsed_h:01d}:{elapsed_m:02d}:{elapsed_s:02d}" if elapsed_h > 0 else f"{elapsed_m:02d}:{elapsed_s:02d}"
+        print(f"    Processed {blocks_processed}/{total_blocks} ({pct:.0f}% — {elapsed_str} elapsed, ~{eta_str} remaining)")
+
         # Brief pause between batches to avoid throttling
-        if i + BATCH_SIZE < len(blocks):
+        if i < len(blocks):
             time.sleep(1.5)
 
     missing = [b["marker"] for b in blocks if b["marker"] not in mapping]

@@ -1,3 +1,49 @@
 @echo off
-REM create_virtual_environment.bat — Creates .venv and installs dependencies.
-python -m venv .venv && call .venv\Scripts\activate.bat && pip install PyMuPDF googletrans==4.0.0rc1
+setlocal enabledelayedexpansion
+
+echo Checking Python version...
+
+REM Get the major and minor version (e.g., 3.13)
+for /f "tokens=2 delims=. " %%a in ('python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"') do set PY_VER=%%a
+
+echo Detected Python version: %PY_VER%
+
+REM Create virtual environment
+if not exist .venv (
+    echo Creating virtual environment...
+    python -m venv .venv
+)
+
+REM Activate the environment
+call .venv\Scripts\activate.bat
+
+echo Installing base dependencies...
+pip install PyMuPDF googletrans==4.0.0rc1
+
+REM Check if version is 3.13 or higher to apply the legacy-cgi fix
+REM We split the version to compare numbers correctly
+for /f "tokens=1,2 delims=." %%a in ("%PY_VER%") do (
+    set MAJOR=%%a
+    set MINOR=%%b
+)
+
+set INSTALL_CGI=0
+if %MAJOR% GEQ 3 (
+    if %MINOR% GEQ 13 (
+        set INSTALL_CGI=1
+    )
+)
+
+if %INSTALL_CGI%==1 (
+    echo [!] Python 3.13+ detected. Installing legacy-cgi to fix 'ModuleNotFoundError: No module named cgi'
+    pip install legacy-cgi
+) else (
+    echo [i] Python version is compatible with standard cgi module.
+)
+
+echo Upgrading httpx and googletrans...
+pip install --upgrade httpx googletrans==4.0.0rc1
+
+echo.
+echo Setup complete!
+pause
